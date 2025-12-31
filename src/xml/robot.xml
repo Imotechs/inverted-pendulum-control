@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mujoco model="balancing_robot">
+
+  <compiler angle="degree" inertiafromgeom="true" />
+  
+  <option gravity="0 0 -9.81" timestep="0.005" />
+  
+  <default>
+    <joint damping="0.1" />
+    <geom friction="1.0 0.005 0.0001" margin="0.001" />
+    <motor ctrllimited="true" />
+  </default>
+  
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" 
+             rgb1="0.2 0.3 0.4" rgb2="0.1 0.15 0.2"/>
+    <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance="0.2"/>
+  </asset>
+  
+  <worldbody>
+    <!-- Ground plane -->
+    <geom name="ground" type="plane" pos="0 0 0" size="10 10 0.1" material="grid"/>
+    <light directional="true" pos="0 0 3" dir="0 0 -1"/>
+  
+    <!-- Robot chassis -->
+    <body name="chassis" pos="0 0 0.15">
+      <freejoint name="chassis_free"/>
+      
+      <!-- Main chassis body -->
+      <geom name="chassis_geom" type="box" size="0.25 0.35 0.08" pos="0 0 0.06" 
+            density="350" rgba="0.4 0.4 0.8 1"/>
+      
+      <!-- Left wheel -->
+      <body name="wheel_left" pos="0 0.28 -0.05" euler="90 0 0">
+        <joint name="left_wheel_joint" type="hinge" axis="0 0 1" damping="0.5"/>
+        <geom name="wheel_left_geom" type="cylinder" size="0.08 0.03" 
+              density="900" rgba="0.2 0.2 0.2 1" friction="2.5 0.01 0.0005"/>
+      </body>
+  
+      <!-- Right wheel -->
+      <body name="wheel_right" pos="0 -0.28 -0.05" euler="90 0 0">
+        <joint name="right_wheel_joint" type="hinge" axis="0 0 1" damping="0.5"/>
+        <geom name="wheel_right_geom" type="cylinder" size="0.08 0.03" 
+              density="900" rgba="0.2 0.2 0.2 1" friction="2.5 0.01 0.0005"/>
+      </body>
+      
+      <!-- Pendulum assembly -->
+      <body name="pendulum_base" pos="0 0 0.25">
+        <joint name="pendulum_hinge" type="hinge" axis="0 1 0" damping="0.05"/>
+        
+        <!-- Pendulum rod -->
+        <geom name="pendulum_rod" type="capsule" fromto="0 0 0 0 0 0.9" 
+              size="0.03" density="80" rgba="0.8 0.2 0.2 0.9"/>
+        
+        <!-- Pendulum mass at top -->
+        <body name="pendulum_mass" pos="0 0 0.9">
+          <geom name="top_mass" type="sphere" size="0.08" 
+                density="1200" rgba="0.9 0.1 0.1 1"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  
+  <actuator>
+    <!-- Wheel motors -->
+    <motor name="left_motor" joint="left_wheel_joint" ctrlrange="-10 10"/>
+    <motor name="right_motor" joint="right_wheel_joint" ctrlrange="-10 10"/>
+  </actuator>
+  
+  <sensor>
+    <!-- Basic sensors -->
+    <jointpos name="pendulum_angle" joint="pendulum_hinge"/>
+    <jointvel name="pendulum_velocity" joint="pendulum_hinge"/>
+    <jointvel name="left_wheel_vel" joint="left_wheel_joint"/>
+    <jointvel name="right_wheel_vel" joint="right_wheel_joint"/>
+  </sensor>
+
+</mujoco>
