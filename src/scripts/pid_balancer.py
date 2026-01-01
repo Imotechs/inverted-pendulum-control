@@ -1,132 +1,128 @@
+# import mujoco
+# import mujoco.viewer
+# import numpy as np
+# import time
+# from collections import deque
+
+# MODEL_PATH = "xml/mobile_pendulum.xml"
+# model = mujoco.MjModel.from_xml_path(MODEL_PATH)
+# data = mujoco.MjData(model)
+
+# # ========== CONTROL PARAMETERS ==========
+# # PID gains (tuned for realistic model)
+# Kp = 5.0     # Proportional gain
+# Ki = 0.5      # Integral gain (careful with windup)
+# Kd = 2.0     # Derivative gain
+
+# with mujoco.viewer.launch_passive(model, data) as viewer:
+#     mujoco.mj_resetData(model, data)
+#     mujoco.mj_forward(model, data)
+
+#     last = time.time()
+#     step = 0
+#     pendulum_joint = model.joint("pendulum_hinge")
+#     pend_qpos_idx = pendulum_joint.qposadr[0]
+#     pend_qvel_idx = pendulum_joint.dofadr[0]
+#     # Recovery tracking
+#     recovery_start_time = None
+    
+#     while viewer.is_running():
+#         now = time.time()
+#         dt = now - last
+#         last = now
+
+#         # ========== READ SENSOR DATA ==========
+#         pend_angle = data.qpos[pend_qpos_idx]
+#         pend_vel = data.qvel[pend_qvel_idx]
+#         mujoco.mj_step(model, data)
+#         viewer.sync()
+
+
 import mujoco
 import mujoco.viewer
 import numpy as np
 import time
 
-# ------------------ LOAD MODEL ------------------
-model_path = "xml/mobile_pendulum.xml"
-model = mujoco.MjModel.from_xml_path(model_path)
+MODEL_PATH = "xml/slider.xml"
+model = mujoco.MjModel.from_xml_path(MODEL_PATH)
 data = mujoco.MjData(model)
 
-# --------------- CONTROLLER GAINS -----------------
-Kp_bal = 40.0       # a bit smaller to start
-Kd_bal = 6.0
+# ===================== PID GAINS =====================
+Kp = 33.0
+Ki = 5.0
+Kd = 5.0
 
-# Always-active controller (remove dead threshold so we react early)
-USE_UPRIGHT_THRESHOLD = False
-UPRIGHT_THRESHOLD = 0.0
+# integral term storage
+integral_error = 0.0
 
-# actuator indices (matches xml order)
-LEFT_CTRL_IDX = 0
-RIGHT_CTRL_IDX = 1
+# anti-windup limits
+INTEGRAL_LIMIT = 2.0
 
-# safety saturation (keep small so wheels don't blast away)
-MAX_VEL = 200.0       # target wheel velocity [rad/s]
+# wheel parameters (must match XML)
+wheel_radius = 0.10
+wheel_distance = 0.34       # distance between wheels
 
-# ---------------- DISTURBANCE CONFIG ----------------
-# mode: "impulse_qvel" (instant angular velocity kick),
-#       "impulse_torque" (short small torque), or
-#       "noise" (small continuous torque noise)
-DISTURBANCE_MODE = "impulse_qvel"   # "impulse_qvel", "impulse_torque", or "noise"
+# indices
+pendulum_joint = model.joint("pendulum_hinge")
+pend_qpos_idx = pendulum_joint.qposadr[0]
+pend_qvel_idx = pendulum_joint.dofadr[0]
 
-# impulse (qvel) parameters: instantaneous angular velocity added (rad/s)
-QVEL_KICK_MAG = 0.35     # try 0.2..0.6 for gentle pushes
-IMPULSE_INTERVAL = 3.0   # average seconds between kicks
-
-# impulse (torque) parameters: if using torque-style impulses
-IMPULSE_DURATION = 0.02  # seconds (very short)
-IMPULSE_AMPLITUDE = 1.0  # N·m (small)
-
-# noise parameters (if using noise)
-NOISE_STD = 0.05         # small continuous torque noise (N·m)
-
-# random seed (for reproducibility)
-rng = np.random.default_rng(12345)
-
-# ----------------- indices --------------------
-pend_qpos_idx = model.joint("pendulum_hinge").qposadr[0]
-pend_qvel_idx = model.joint("pendulum_hinge").dofadr[0]
-
-# runtime state
-next_impulse_time = time.time() + rng.uniform(0.3, IMPULSE_INTERVAL)
-impulse_time_remaining = 0.0
-
-# optional simple velocity filter for derivative
-filtered_pend_vel = 0.0
-vel_filter_alpha = 0.2
-
+left_motor_id = model.actuator("left_motor").id
+right_motor_id = model.actuator("right_motor").id
+DEADZONE = 0.003  # radians ≈ 0.057 degrees
 with mujoco.viewer.launch_passive(model, data) as viewer:
+
     mujoco.mj_resetData(model, data)
-
-    # small initial tilt so the controller needs to act
-    #data.qpos[pend_qpos_idx] = 0.08   # ~4.6 degrees - gentle
     mujoco.mj_forward(model, data)
-
-    last = time.time()
+    last_time = time.time()
+    counter = 0
     while viewer.is_running():
+
         now = time.time()
-        dt = now - last if last is not None else model.opt.timestep
-        last = now
+        dt = now - last_time
+        last_time = now
 
-        # read pendulum state
-        pend_angle = data.qpos[pend_qpos_idx]
-        pend_vel_raw = data.qvel[pend_qvel_idx]
+        # ===================== READ PENDULUM STATE =====================
+        theta = data.qpos[pend_qpos_idx]          # pendulum angle (rad)
+        theta_dot = data.qvel[pend_qvel_idx]      # angular velocity
+        # normalize angle to [-pi, pi]
+        theta = ((theta + np.pi) % (2 * np.pi)) - np.pi
+        print("pend. angle:",theta)
+        data.qpos[pend_qpos_idx] = 0.03
+        # ===================== PID CONTROLLER =====================
+        error = 0.0 - theta
+        #print("error:",error)
+        # dead-zone: don't correct tiny angles
+        if counter>800 and abs(theta) < DEADZONE:
+            error = 0.0
+            integral_error = 0.0
+            #theta_dot = 0.0
 
-        # wrap angle to [-pi, pi]
-        pend_angle = (pend_angle + np.pi) % (2*np.pi) - np.pi
+        # proportional
+        P = Kp * error
 
-        # filtered velocity
-        filtered_pend_vel = (1.0 - vel_filter_alpha) * filtered_pend_vel + vel_filter_alpha * pend_vel_raw
-        pend_vel = filtered_pend_vel
+        # integral + anti-windup
+        integral_error += error * dt
+        integral_error = np.clip(integral_error, -INTEGRAL_LIMIT, INTEGRAL_LIMIT)
+        I = Ki * integral_error
 
-        # ----- controller (PD on pendulum angle) -----
-        if USE_UPRIGHT_THRESHOLD and abs(pend_angle) <= UPRIGHT_THRESHOLD:
-            control = 0.0
-        else:
-            # map angular error -> wheel target velocity (small gains)
-            control = -(Kp_bal * pend_angle + Kd_bal * pend_vel)
+        # derivative
+        D = Kd * (-theta_dot)
 
-        # scale control down so it doesn't produce extreme wheel velocity targets
-        # this keeps actuator torques moderate and avoids runaway movement
-        control = np.clip(control, -MAX_VEL, MAX_VEL)
+        # cart velocity command
+        cart_velocity_cmd = P + I + D
 
-        data.ctrl[LEFT_CTRL_IDX]  = control
-        data.ctrl[RIGHT_CTRL_IDX] = control
+        # ===================== MAP CART VELOCITY TO WHEELS =====================
+        # differential drive
+        left_wheel_vel = cart_velocity_cmd / wheel_radius
+        right_wheel_vel = cart_velocity_cmd / wheel_radius
 
-        # ----- disturbances -----
-        # clear previous applied generalized forces/vel kicks only on the hinge dof
-        data.qfrc_applied[pend_qvel_idx] = 0.0
+        # apply command to actuators
+        data.ctrl[left_motor_id] = left_wheel_vel
+        data.ctrl[right_motor_id] = right_wheel_vel
 
-        if DISTURBANCE_MODE == "noise":
-            # tiny continuous torque noise
-            torque = rng.normal(0.0, NOISE_STD)
-            data.qfrc_applied[pend_qvel_idx] += torque
-
-        elif DISTURBANCE_MODE == "impulse_torque":
-            # short small torque pulses (gentle)
-            tnow = time.time()
-            if tnow >= next_impulse_time:
-                impulse_time_remaining = IMPULSE_DURATION
-                next_impulse_time = tnow + rng.uniform(IMPULSE_INTERVAL * 0.5, IMPULSE_INTERVAL * 1.5)
-                print(f"[disturb] starting small torque impulse (amp={IMPULSE_AMPLITUDE:.2f} N·m)")
-
-            if impulse_time_remaining > 0.0:
-                sign = rng.choice([-1.0, 1.0])
-                data.qfrc_applied[pend_qvel_idx] += sign * IMPULSE_AMPLITUDE
-                impulse_time_remaining -= dt
-
-        elif DISTURBANCE_MODE == "impulse_qvel":
-            # instantaneous angular-velocity "kick" (gentle). This is less likely to overpower a PD velocity-driven controller.
-            tnow = time.time()
-            if tnow >= next_impulse_time:
-                # apply a one-shot velocity increment
-                sign = rng.choice([-1.0, 1.0])
-                delta = sign * QVEL_KICK_MAG
-                data.qvel[pend_qvel_idx] += delta
-                print(f"[disturb] qvel kick: delta={delta:.3f} rad/s")
-                # schedule next
-                next_impulse_time = tnow + rng.uniform(IMPULSE_INTERVAL * 0.5, IMPULSE_INTERVAL * 1.5)
-
-        # ----- step simulator & render -----
+        # ===================== STEP SIMULATION =====================
         mujoco.mj_step(model, data)
+
+        # update viewer
         viewer.sync()
